@@ -16,7 +16,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 
+import com.db4o.ObjectContainer;
+import com.db4o.ObjectSet;
+import com.db4o.query.Query;
+
 import freenet.client.DefaultMIMETypes;
+import freenet.client.async.ClientContext;
+import freenet.client.async.DBJob;
+import freenet.client.async.DatabaseDisabledException;
 import freenet.io.comm.DMT;
 import freenet.io.comm.DisconnectedException;
 import freenet.io.comm.FreenetInetAddress;
@@ -25,13 +32,16 @@ import freenet.io.comm.NotConnectedException;
 import freenet.io.comm.Peer;
 import freenet.io.comm.PeerParseException;
 import freenet.io.comm.ReferenceSignatureVerificationException;
-import freenet.io.comm.RetrievalException;
-import freenet.io.xfer.BulkReceiver;
-import freenet.io.xfer.BulkTransmitter;
-import freenet.io.xfer.PartiallyReceivedBulk;
 import freenet.keys.FreenetURI;
 import freenet.l10n.NodeL10n;
-import freenet.l10n.NodeL10n;
+import freenet.node.fcp.ClientReceive;
+import freenet.node.fcp.ClientReceiveMessage;
+import freenet.node.fcp.ClientSend;
+import freenet.node.fcp.FCPConnectionHandler;
+import freenet.node.fcp.FCPMessage;
+import freenet.node.fcp.FCPServer;
+import freenet.node.fcp.IdentifierCollisionException;
+import freenet.node.fcp.ReceivedFileOfferFeedMessage;
 import freenet.node.useralerts.AbstractUserAlert;
 import freenet.node.useralerts.BookmarkFeedUserAlert;
 import freenet.node.useralerts.DownloadFeedUserAlert;
@@ -45,8 +55,7 @@ import freenet.support.Logger;
 import freenet.support.SimpleFieldSet;
 import freenet.support.SizeUtil;
 import freenet.support.io.FileUtil;
-import freenet.support.io.RandomAccessFileWrapper;
-import freenet.support.io.RandomAccessThing;
+import freenet.support.io.NativeThread;
 
 public class DarknetPeerNode extends PeerNode {
 
@@ -793,43 +802,33 @@ public class DarknetPeerNode extends PeerNode {
 
 	// File transfer offers
 	// FIXME this should probably be somewhere else, along with the N2NM stuff... but where?
-	// FIXME this should be persistent across node restarts
-
-	/** Files I have offered to this peer */
-	private final HashMap<Long, FileOffer> myFileOffersByUID = new HashMap<Long, FileOffer>();
 	/** Files this peer has offered to me */
 	private final HashMap<Long, FileOffer> hisFileOffersByUID = new HashMap<Long, FileOffer>();
-	
-	private void storeOffers() {
-		// FIXME do something
-	}
 	
 	class FileOffer {
 		final long uid;
 		final String filename;
 		final String mimeType;
 		final String comment;
-		private RandomAccessThing data;
 		final long size;
 		/** Who is offering it? True = I am offering it, False = I am being offered it */
 		final boolean amIOffering;
-		private PartiallyReceivedBulk prb;
-		private BulkTransmitter transmitter;
-		private BulkReceiver receiver;
 		/** True if the offer has either been accepted or rejected */
 		private boolean acceptedOrRejected;
+		/** The number of the extra peer data file that contains the offer */
+		final int fileNumber;
 		
-		FileOffer(long uid, RandomAccessThing data, String filename, String mimeType, String comment) throws IOException {
+		FileOffer(long uid, long size, String filename, String mimeType, String comment) {
 			this.uid = uid;
-			this.data = data;
 			this.filename = filename;
 			this.mimeType = mimeType;
 			this.comment = comment;
-			size = data.size();
+			this.size = size;
 			amIOffering = true;
+			fileNumber = -1;
 		}
 
-		public FileOffer(SimpleFieldSet fs, boolean amIOffering) throws FSParseException {
+		public FileOffer(SimpleFieldSet fs, int fileNumber, boolean amIOffering) throws FSParseException {
 			uid = fs.getLong("uid");
 			size = fs.getLong("size");
 			mimeType = fs.get("metadata.contentType");
@@ -846,6 +845,7 @@ public class DarknetPeerNode extends PeerNode {
 			}
 			comment = s;
 			this.amIOffering = amIOffering;
+			this.fileNumber = fileNumber;
 		}
 
 		public void toFieldSet(SimpleFieldSet fs) {
@@ -862,86 +862,16 @@ public class DarknetPeerNode extends PeerNode {
 
 		public void accept() {
 			acceptedOrRejected = true;
-			File dest = new File(node.clientCore.downloadDir, "direct-"+FileUtil.sanitize(getName())+"-"+filename);
-			try {
-				data = new RandomAccessFileWrapper(dest, "rw");
-			} catch (FileNotFoundException e) {
-				// Impossible
-				throw new Error("Impossible: FileNotFoundException opening with RAF with rw! "+e, e);
-			}
-			prb = new PartiallyReceivedBulk(node.usm, size, Node.PACKET_SIZE, data, false);
-			receiver = new BulkReceiver(prb, DarknetPeerNode.this, uid, null);
-			// FIXME make this persistent
-			node.executor.execute(new Runnable() {
-				public void run() {
-					if(logMINOR)
-						Logger.minor(this, "Received file");
-					try {
-						if(!receiver.receive()) {
-							String err = "Failed to receive "+this;
-							Logger.error(this, err);
-							System.err.println(err);
-							onReceiveFailure();
-						} else {
-							onReceiveSuccess();
-						}
-					} catch (Throwable t) {
-						Logger.error(this, "Caught "+t+" receiving file", t);
-						onReceiveFailure();
-					} finally {
-						remove();
-					}
-					if(logMINOR)
-						Logger.minor(this, "Received file");
-				}
-			}, "Receiver for bulk transfer "+uid+":"+filename);
+			if(fileNumber != -1)
+				deleteExtraPeerDataFile(fileNumber);
 			sendFileOfferAccepted(uid);
-		}
-
-		protected void remove() {
-			Long l = uid;
-			synchronized(DarknetPeerNode.this) {
-				myFileOffersByUID.remove(l);
-				hisFileOffersByUID.remove(l);
-			}
-			data.close();
-		}
-
-		public void send() throws DisconnectedException {
-			prb = new PartiallyReceivedBulk(node.usm, size, Node.PACKET_SIZE, data, true);
-			transmitter = new BulkTransmitter(prb, DarknetPeerNode.this, uid, false, node.nodeStats.nodeToNodeCounter);
-			if(logMINOR)
-				Logger.minor(this, "Sending "+uid);
-			node.executor.execute(new Runnable() {
-				public void run() {
-					if(logMINOR)
-						Logger.minor(this, "Sending file");
-					try {
-						if(!transmitter.send()) {
-							String err = "Failed to send "+uid+" for "+FileOffer.this;
-							Logger.error(this, err);
-							System.err.println(err);
-						}
-					} catch (Throwable t) {
-						Logger.error(this, "Caught "+t+" sending file", t);
-						remove();
-					}
-					if(logMINOR)
-						Logger.minor(this, "Sent file");
-				}
-
-			}, "Sender for bulk transfer "+uid+":"+filename);
 		}
 
 		public void reject() {
 			acceptedOrRejected = true;
+			if(fileNumber != -1)
+				deleteExtraPeerDataFile(fileNumber);
 			sendFileOfferRejected(uid);
-		}
-
-		public void onRejected() {
-			transmitter.cancel("FileOffer: Offer rejected");
-			// FIXME prb's can't be shared, right? Well they aren't here...
-			prb.abort(RetrievalException.CANCELLED_BY_RECEIVER, "Cancelled by receiver");
 		}
 
 		protected void onReceiveFailure() {
@@ -950,6 +880,7 @@ public class DarknetPeerNode extends PeerNode {
 				public String dismissButtonText() {
 					return NodeL10n.getBase().getString("UserAlert.hide");
 				}
+
 				@Override
 				public HTMLNode getHTMLText() {
 					HTMLNode div = new HTMLNode("div");
@@ -1145,10 +1076,12 @@ public class DarknetPeerNode extends PeerNode {
 					
 					return div;
 				}
+				
 				@Override
 				public short getPriorityClass() {
 					return UserAlert.MINOR;
 				}
+				
 				@Override
 				public String getText() {
 					String header = l10n("offeredFileHeader", "name", getName());
@@ -1168,14 +1101,7 @@ public class DarknetPeerNode extends PeerNode {
 					}
 					return true;
 				}
-				@Override
-				public void isValid(boolean validity) {
-					// Ignore
-				}
-				@Override
-				public void onDismiss() {
-					// Ignore
-				}
+				
 				@Override
 				public boolean shouldUnregisterOnDismiss() {
 					return false;
@@ -1185,9 +1111,15 @@ public class DarknetPeerNode extends PeerNode {
 				public boolean userCanDismiss() {
 					return false; // should accept or reject
 				}
+				
 				@Override
 				public String getShortText() {
 					return l10n("offeredFileShort", new String[] { "filename", "node" }, new String[] { filename, getName() });
+				}
+				
+				@Override
+				public FCPMessage getFCPMessage() {
+					return new ReceivedFileOfferFeedMessage(getTitle(), getShortText(), getText(), getName(), filename, mimeType, uid, size);
 				}
 			};
 			
@@ -1316,7 +1248,6 @@ public class DarknetPeerNode extends PeerNode {
 
 	public int sendFileOfferAccepted(long uid) {
 		long now = System.currentTimeMillis();
-		storeOffers();
 
 		SimpleFieldSet fs = new SimpleFieldSet(true);
 		fs.put("type", Node.N2N_TEXT_MESSAGE_TYPE_FILE_OFFER_ACCEPTED);
@@ -1332,7 +1263,6 @@ public class DarknetPeerNode extends PeerNode {
 
 	public int sendFileOfferRejected(long uid) {
 		long now = System.currentTimeMillis();
-		storeOffers();
 
 		SimpleFieldSet fs = new SimpleFieldSet(true);
 		fs.put("type", Node.N2N_TEXT_MESSAGE_TYPE_FILE_OFFER_REJECTED);
@@ -1345,17 +1275,11 @@ public class DarknetPeerNode extends PeerNode {
 		return getPeerNodeStatus();
 	}
 
-	public int sendFileOffer(File filename, String message) throws IOException {
+	public int sendFileOffer(final File filename, String message, long uid, long size) {
 		long now = System.currentTimeMillis();
-		long uid = node.random.nextLong();
 		String fnam = filename.getName();
 		String mime = DefaultMIMETypes.guessMIMEType(fnam, false);
-		RandomAccessThing data = new RandomAccessFileWrapper(filename, "r");
-		FileOffer fo = new FileOffer(uid, data, fnam, mime, message);
-		synchronized(this) {
-			myFileOffersByUID.put(uid, fo);
-		}
-		storeOffers();
+		FileOffer fo = new FileOffer(uid, size, fnam, mime, message);
 
 		SimpleFieldSet fs = new SimpleFieldSet(true);
 		fo.toFieldSet(fs);
@@ -1386,7 +1310,7 @@ public class DarknetPeerNode extends PeerNode {
 	public void handleFproxyFileOffer(SimpleFieldSet fs, int fileNumber) {
 		final FileOffer offer;
 		try {
-			offer = new FileOffer(fs, false);
+			offer = new FileOffer(fs, fileNumber, false);
 		} catch (FSParseException e) {
 			Logger.error(this, "Could not parse offer: "+e+" on "+this+" :\n"+fs, e);
 			return;
@@ -1398,37 +1322,88 @@ public class DarknetPeerNode extends PeerNode {
 			hisFileOffersByUID.put(u, offer);
 		}
 		
-		// Don't persist for now - FIXME
-		this.deleteExtraPeerDataFile(fileNumber);
-		
 		UserAlert alert = offer.askUserUserAlert();
 			
 		node.clientCore.alerts.register(alert);
 	}
 
-	public void acceptTransfer(long id) {
+	public void acceptTransfer(final long uid) {
 		if(logMINOR)
-			Logger.minor(this, "Accepting transfer "+id+" on "+this);
-		FileOffer fo;
-		synchronized(this) {
-			fo = hisFileOffersByUID.get(id);
+			Logger.minor(this, "Accepting transfer "+uid+" on "+this);
+		final FileOffer offer;
+		synchronized(hisFileOffersByUID) {
+			offer = hisFileOffersByUID.get(uid);
+			if(offer == null)
+				return;
+			else
+				offer.accept();
 		}
-		fo.accept();
+
+		final FCPServer fcp = node.clientCore.getFCPServer();
+		final String identifier = "FProxy:" + getName() + ":" + offer.filename;
+		try {
+			node.clientCore.queue(new DBJob() {
+
+				public boolean run(ObjectContainer container, ClientContext context) {
+					final ClientReceive clientReceive;
+					try {
+						clientReceive = new ClientReceive(fcp.getGlobalForeverClient(), identifier, null, DarknetPeerNode.this, Integer.MAX_VALUE, new File(offer.filename), offer.size, offer.mimeType, offer.uid, fcp, container);
+						if(clientReceive != null)
+							try {
+								fcp.startBlocking(clientReceive, container, context);
+							} catch (IdentifierCollisionException e) {
+								e.printStackTrace();
+								Logger.error(this, "Cannot receive same file twice in same millisecond");
+								return false;
+							} catch (DatabaseDisabledException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							}
+						return true;
+					} catch (IOException e) {
+						e.printStackTrace();
+						// Ignore
+						return false;
+					} catch (DisconnectedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					return false;
+			}}, NativeThread.NORM_PRIORITY, false);
+		} catch (DatabaseDisabledException e1) {
+			return;
+		}
+
+	}
+
+	public void acceptTransfer(ClientReceiveMessage message, FCPConnectionHandler handler) {
+		if(logMINOR)
+			Logger.minor(this, "Accepting transfer "+message.uid+" on "+this);
+		final FileOffer offer;
+		synchronized(hisFileOffersByUID) {
+			offer = hisFileOffersByUID.get(message.uid);
+			if(offer == null)
+				return;
+			else
+				offer.accept();
+		}
+
+		handler.startClientReceive(message, node, this, offer.filename, offer.mimeType, offer.size);
 	}
 	
-	public void rejectTransfer(long id) {
-		FileOffer fo;
-		synchronized(this) {
-			fo = hisFileOffersByUID.remove(id);
+	public void rejectTransfer(final long uid) {
+		synchronized(hisFileOffersByUID) {
+			FileOffer fo = hisFileOffersByUID.get(uid);
+			if(fo != null)
+				fo.reject();
 		}
-		fo.reject();
+
 	}
 	
 	public void handleFproxyFileOfferAccepted(SimpleFieldSet fs, int fileNumber) {
-		// Don't persist for now - FIXME
 		this.deleteExtraPeerDataFile(fileNumber);
 		
-		long uid;
+		final long uid;
 		try {
 			uid = fs.getLong("uid");
 		} catch (FSParseException e) {
@@ -1437,43 +1412,68 @@ public class DarknetPeerNode extends PeerNode {
 		}
 		if(logMINOR)
 			Logger.minor(this, "Offer accepted for "+uid);
-		FileOffer fo;
-		synchronized(this) {
-			fo = (myFileOffersByUID.get(uid));
-		}
-		if(fo == null) {
-			Logger.error(this, "No such offer: "+uid);
-			try {
-				sendAsync(DMT.createFNPBulkSendAborted(uid), null, node.nodeStats.nodeToNodeCounter);
-			} catch (NotConnectedException e) {
-				// Fine by me!
-			}
-			return;
-		}
+
 		try {
-			fo.send();
-		} catch (DisconnectedException e) {
-			Logger.error(this, "Cannot send because node disconnected: "+e+" for "+uid+":"+fo.filename, e);
+			node.clientCore.queue(new DBJob() {
+				public boolean run(ObjectContainer container, ClientContext context) {
+					Query query = container.query();
+					query.constrain(ClientSend.class);
+					query.descend("uid").constrain(uid);
+					ObjectSet<?> set = query.execute();
+					if(set.isEmpty()) {
+						Logger.error(this, "No such offer: " + uid);
+						try {
+							sendAsync(DMT.createFNPBulkSendAborted(uid), null, node.nodeStats.nodeToNodeCounter);
+						} catch (NotConnectedException e) {
+							// Fine by me!
+						}
+						return false;
+					}
+					final ClientSend send = (ClientSend)set.next();
+//					container.store(send);
+					container.activate(send, 5);
+					send.accept();
+					send.start(container, context);
+					return false;
+				}
+			}, NativeThread.NORM_PRIORITY, false);
+		} catch (DatabaseDisabledException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
 		}
 	}
 
 	public void handleFproxyFileOfferRejected(SimpleFieldSet fs, int fileNumber) {
-		// Don't persist for now - FIXME
 		this.deleteExtraPeerDataFile(fileNumber);
-		
-		long uid;
+
+		final long uid;
 		try {
 			uid = fs.getLong("uid");
 		} catch (FSParseException e) {
 			Logger.error(this, "Could not parse offer rejected: "+e+" on "+this+" :\n"+fs, e);
 			return;
 		}
-		
-		FileOffer fo;
-		synchronized(this) {
-			fo = myFileOffersByUID.remove(uid);
+
+		try {
+			node.clientCore.queue(new DBJob() {
+				public boolean run(ObjectContainer container, ClientContext context) {
+					Query query = container.query();
+					query.constrain(ClientSend.class);
+					query.descend("uid").constrain(uid);
+					ObjectSet<?> set = query.execute();
+					if(set.isEmpty()) {
+						Logger.error(this, "No such offer: " + uid);
+						return false;
+					}
+					ClientSend send = (ClientSend)set.next();
+					send.rejected();
+					return false;
+				}
+			}, NativeThread.NORM_PRIORITY, false);
+		} catch (DatabaseDisabledException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
 		}
-		fo.onRejected();
 	}
 
 	public void handleFproxyBookmarkFeed(SimpleFieldSet fs, int fileNumber) {

@@ -62,6 +62,19 @@ public class PartiallyReceivedBulk {
 		}
 	}
 
+	public PartiallyReceivedBulk(MessageCore usm, long size, int blockSize, RandomAccessThing raf, long nrBlocksReceived) {
+		this.size = size;
+		this.blockSize = blockSize;
+		this.raf = raf;
+		this.usm = usm;
+		long blocks = size / blockSize + (size % blockSize > 0 ? 1 : 0);
+		if(blocks > Integer.MAX_VALUE)
+			throw new IllegalArgumentException("Too big");
+		this.blocks = (int)blocks;
+		blocksReceived = new BitArray(this.blocks);
+		blocksReceived.setNFirstOnes(nrBlocksReceived);
+	}
+
 	/**
 	 * Clone the blocksReceived BitArray. Used by BulkTransmitter to find what blocks are available on 
 	 * creation. BulkTransmitter will have already taken the lock and will keep it over the add() also.
@@ -195,4 +208,5 @@ public class PartiallyReceivedBulk {
 	public String getAbortDescription() {
 		return _abortDescription;
 	}
+
 }

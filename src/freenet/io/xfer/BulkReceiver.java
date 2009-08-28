@@ -3,6 +3,13 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.io.xfer;
 
+import com.db4o.ObjectContainer;
+
+import freenet.client.async.ClientContext;
+import freenet.client.async.DBJob;
+import freenet.client.async.DBJobRunner;
+import freenet.client.async.DatabaseDisabledException;
+import freenet.client.async.TransmitCompletionCallback;
 import freenet.io.comm.ByteCounter;
 import freenet.io.comm.DMT;
 import freenet.io.comm.DisconnectedException;
@@ -12,6 +19,7 @@ import freenet.io.comm.NotConnectedException;
 import freenet.io.comm.PeerContext;
 import freenet.io.comm.RetrievalException;
 import freenet.support.ShortBuffer;
+import freenet.support.io.NativeThread;
 
 /**
  * Bulk (not block) data transfer - receiver class. Bulk transfer is designed for largish files, much
@@ -31,13 +39,21 @@ public class BulkReceiver {
 	/** Not persistent over reboots */
 	final long peerBootID;
 	private final ByteCounter ctr;
+	private final TransmitCompletionCallback callback;
+	private final DBJobRunner runner;
 
 	public BulkReceiver(PartiallyReceivedBulk prb, PeerContext peer, long uid, ByteCounter ctr) {
+		this(null, null, prb, peer, uid, ctr);
+	}
+
+	public BulkReceiver(DBJobRunner runner, TransmitCompletionCallback callback, PartiallyReceivedBulk prb, PeerContext peer, long uid, ByteCounter ctr) {
 		this.prb = prb;
 		this.peer = peer;
 		this.uid = uid;
 		this.peerBootID = peer.getBootID();
 		this.ctr = ctr;
+		this.callback = callback;
+		this.runner = runner;
 		
 		prb.recv = this;
 	}
@@ -52,6 +68,18 @@ public class BulkReceiver {
 		} catch (NotConnectedException e) {
 			// Cool
 		}
+		if(callback != null && runner != null)
+			try {
+				runner.queue(new DBJob() {
+					public boolean run(ObjectContainer container, ClientContext context) {
+						callback.onFailure(container, context);
+						return false;
+					}
+				}, NativeThread.NORM_PRIORITY, false);
+			} catch (DatabaseDisabledException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 	}
 
 	/**
@@ -68,6 +96,18 @@ public class BulkReceiver {
 				} catch (NotConnectedException e) {
 					// Ignore, we have the data.
 				}
+				if(callback != null && runner != null)
+					try {
+						runner.queue(new DBJob() {
+							public boolean run(ObjectContainer container, ClientContext context) {
+								callback.onSuccess(container, context);
+								return false;
+							}
+						}, NativeThread.NORM_PRIORITY, false);
+					} catch (DatabaseDisabledException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
 				return true;
 			}
 			Message m;
@@ -93,6 +133,18 @@ public class BulkReceiver {
 				int packetNo = m.getInt(DMT.PACKET_NO);
 				byte[] data = ((ShortBuffer) m.getObject(DMT.DATA)).getData();
 				prb.received(packetNo, data, 0, data.length);
+				if(callback != null && runner != null)
+					try {
+						runner.queue(new DBJob() {
+							public boolean run(ObjectContainer container, ClientContext context) {
+								callback.onBlockFinished(container, context);
+								return false;
+							}
+						}, NativeThread.NORM_PRIORITY, false);
+					} catch (DatabaseDisabledException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
 			}
 		}
 	}

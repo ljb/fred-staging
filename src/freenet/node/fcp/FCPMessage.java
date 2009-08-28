@@ -49,6 +49,10 @@ public abstract class FCPMessage {
 			return new ClientPutDiskDirMessage(fs);
 		if(name.equals(ClientPutMessage.NAME))
 			return new ClientPutMessage(fs);
+		if(name.equals(ClientReceiveMessage.NAME))
+			return new ClientReceiveMessage(fs);
+		if(name.equals(ClientSendMessage.NAME))
+			return new ClientSendMessage(fs);
 		if(name.equals(SendBookmarkFeedMessage.NAME))
 			return new SendBookmarkFeedMessage(fs);
 		if(name.equals(SendDownloadFeedMessage.NAME))

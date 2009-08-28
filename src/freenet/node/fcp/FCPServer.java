@@ -25,6 +25,8 @@ import freenet.client.DefaultMIMETypes;
 import freenet.client.FetchContext;
 import freenet.client.HighLevelSimpleClient;
 import freenet.client.InsertContext;
+import freenet.client.ReceiveContext;
+import freenet.client.SendContext;
 import freenet.client.TempFetchResult;
 import freenet.client.async.ClientContext;
 import freenet.client.async.DBJob;
@@ -82,6 +84,8 @@ public class FCPServer implements Runnable {
 	private final Object persistenceSync = new Object();
 	final FetchContext defaultFetchContext;
 	public InsertContext defaultInsertContext;
+	public SendContext defaultSendContext;
+	public ReceiveContext defaultReceiveContext;
 	public static final int QUEUE_MAX_RETRIES = -1;
 	public static final long QUEUE_MAX_DATA_SIZE = Long.MAX_VALUE;
 	private boolean assumeDownloadDDAIsAllowed;

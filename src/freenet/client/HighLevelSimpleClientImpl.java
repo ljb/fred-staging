@@ -218,6 +218,33 @@ public class HighLevelSimpleClientImpl implements HighLevelSimpleClient, Request
 		return pw.waitForCompletion();
 	}
 	
+//	public ClientSender send(DarknetPeerNode peer, File file, ClientSendReceiveCallback callback) throws DisconnectedException {
+//	ClientSender send = new ClientSender(null, null, null, null, priorityClass, null, null);
+//	try {
+//		core.clientContext.start(send);
+//	} catch (DatabaseDisabledException e) {
+//		// Impossible
+//	}
+//	return send;
+//}
+
+//public ClientReceiver receive(String nodeName, File file, ClientSendReceiveCallback callback) {
+//	ClientReceiver receive = new ClientReceiver(null, null, null, null, null);
+//	try {
+//		core.clientContext.receive(receive);
+//	} catch (DatabaseDisabledException e) {
+//		// Impossible
+//	}
+//}
+
+	public SendContext getSendContext() {
+		return new SendContext(eventProducer);
+	}
+
+	public ReceiveContext getReceiveContext() {
+		return new ReceiveContext(eventProducer);
+	}
+
 	/**
      * @deprecated Use {@link #addEventHook(ClientEventListener)} instead
      */

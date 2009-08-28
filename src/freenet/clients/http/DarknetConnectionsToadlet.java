@@ -1,23 +1,36 @@
 package freenet.clients.http;
 
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Comparator;
 import java.util.HashMap;
 
+import com.db4o.ObjectContainer;
+
 import freenet.client.HighLevelSimpleClient;
 import freenet.l10n.NodeL10n;
+import freenet.client.async.ClientContext;
+import freenet.client.async.DBJob;
+import freenet.client.async.DatabaseDisabledException;
+import freenet.io.comm.DisconnectedException;
 import freenet.node.DarknetPeerNode;
 import freenet.node.DarknetPeerNodeStatus;
 import freenet.node.Node;
 import freenet.node.NodeClientCore;
 import freenet.node.PeerManager;
 import freenet.node.PeerNodeStatus;
+import freenet.node.fcp.ClientReceive;
+import freenet.node.fcp.ClientSend;
+import freenet.node.fcp.FCPServer;
+import freenet.node.fcp.IdentifierCollisionException;
 import freenet.support.HTMLNode;
 import freenet.support.Logger;
 import freenet.support.MultiValueTable;
 import freenet.support.SimpleFieldSet;
 import freenet.support.api.HTTPRequest;
+import freenet.support.io.NativeThread;
 
 public class DarknetConnectionsToadlet extends ConnectionsToadlet {
 	

@@ -19,6 +19,7 @@ import freenet.client.async.DBJob;
 import freenet.client.async.DatabaseDisabledException;
 import freenet.io.comm.DisconnectedException;
 import freenet.node.DarknetPeerNode;
+import freenet.node.Node;
 import freenet.support.HexUtil;
 import freenet.support.Logger;
 import freenet.support.LogThresholdCallback;
@@ -562,7 +563,109 @@ public class FCPConnectionHandler implements Closeable {
 			cp.start(null, server.core.clientContext);
 		}
 	}
-	
+
+	public void startClientSend(final ClientSendMessage message, final Node node, final DarknetPeerNode peer, final File file, final long uid) {
+		if(logMINOR)
+			Logger.minor(this, "Starting send ID=\""+message.identifier+ '"');
+		final String identifier = message.identifier;
+		final boolean global = message.global;
+		try {
+			server.core.clientContext.jobRunner.queue(new DBJob() {
+
+				public boolean run(ObjectContainer container, ClientContext context) {
+					ClientSend sender = null;
+					try {
+						sender = new ClientSend(FCPConnectionHandler.this, message, peer, file, uid, server, container);
+					} catch (IdentifierCollisionException e) {
+						e.printStackTrace();
+						Logger.normal(this, "Identifier collision on "+this);
+						FCPMessage msg = new IdentifierCollisionMessage(identifier, global);
+						outputHandler.queue(msg);
+						return false;
+					} catch (MessageInvalidException e) {
+						e.printStackTrace();
+						outputHandler.queue(new ProtocolErrorMessage(e.protocolCode, false, e.getMessage(), e.ident, e.global));
+						return false;
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					} catch (DisconnectedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					try {
+						sender.register(container, false);
+						container.store(sender);
+					} catch (IdentifierCollisionException e) {
+						e.printStackTrace();
+						Logger.normal(this, "Identifier collision on "+this);
+						FCPMessage msg = new IdentifierCollisionMessage(identifier, global);
+						outputHandler.queue(msg);
+						return false;
+					}
+					sender.start(container, context);
+					container.deactivate(sender, 1);
+					return true;
+				}
+			}, NativeThread.HIGH_PRIORITY-1, false);
+		} catch (DatabaseDisabledException e) {
+			outputHandler.queue(new ProtocolErrorMessage(ProtocolErrorMessage.PERSISTENCE_DISABLED, false, "Persistence is disabled", identifier, global));
+			return;
+		} // user wants a response soon... but doesn't want it to block the queue page etc
+
+	}
+
+	public void startClientReceive(final ClientReceiveMessage message, final Node node, final DarknetPeerNode peer, final String filename, final String mimeType, final long size) {
+		if(logMINOR)
+			Logger.minor(this, "Starting send ID=\""+message.identifier+ '"');
+		final String identifier = message.identifier;
+		final boolean global = message.global;
+		try {
+			server.core.clientContext.jobRunner.queue(new DBJob() {
+
+				public boolean run(ObjectContainer container, ClientContext context) {
+					ClientReceive receiver = null;
+					try {
+						receiver = new ClientReceive(FCPConnectionHandler.this, message, filename, mimeType, size, peer, server, container);
+					} catch (IdentifierCollisionException e) {
+						e.printStackTrace();
+						Logger.normal(this, "Identifier collision on "+this);
+						FCPMessage msg = new IdentifierCollisionMessage(identifier, global);
+						outputHandler.queue(msg);
+						return false;
+					} catch (MessageInvalidException e) {
+						e.printStackTrace();
+						outputHandler.queue(new ProtocolErrorMessage(e.protocolCode, false, e.getMessage(), e.ident, e.global));
+						return false;
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					} catch (DisconnectedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					try {
+						receiver.register(container, false);
+						container.store(receiver);
+					} catch (IdentifierCollisionException e) {
+						e.printStackTrace();
+						Logger.normal(this, "Identifier collision on "+this);
+						FCPMessage msg = new IdentifierCollisionMessage(identifier, global);
+						outputHandler.queue(msg);
+						return false;
+					}
+					receiver.start(container, context);
+					container.deactivate(receiver, 1);
+					return true;
+				}
+			}, NativeThread.HIGH_PRIORITY-1, false);
+		} catch (DatabaseDisabledException e) {
+			outputHandler.queue(new ProtocolErrorMessage(ProtocolErrorMessage.PERSISTENCE_DISABLED, false, "Persistence is disabled", identifier, global));
+			return;
+		} // user wants a response soon... but doesn't want it to block the queue page etc
+
+	}
+
 	public FCPClient getRebootClient() {
 		return rebootClient;
 	}

@@ -72,7 +72,7 @@ public class ClientPutter extends BaseClientPutter implements PutCompletionCallb
 	 * @param priorityClass
 	 * @param getCHKOnly
 	 * @param isMetadata
-	 * @param clientContext The client object for purposs of round-robin client balancing.
+	 * @param clientContext The client object for purpose of round-robin client balancing.
 	 * @param stored The progress so far, stored as a SimpleFieldSet. Advisory; if there 
 	 * is an error reading this in, we will restart from scratch.
 	 * @param targetFilename If set, create a one-file manifest containing this filename pointing to this file.

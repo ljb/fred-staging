@@ -3,6 +3,13 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.io.xfer;
 
+import com.db4o.ObjectContainer;
+
+import freenet.client.async.ClientContext;
+import freenet.client.async.DBJob;
+import freenet.client.async.DBJobRunner;
+import freenet.client.async.DatabaseDisabledException;
+import freenet.client.async.TransmitCompletionCallback;
 import freenet.io.comm.AsyncMessageCallback;
 import freenet.io.comm.AsyncMessageFilterCallback;
 import freenet.io.comm.ByteCounter;
@@ -16,6 +23,7 @@ import freenet.io.comm.PeerRestartedException;
 import freenet.node.SyncSendWaitedTooLongException;
 import freenet.support.BitArray;
 import freenet.support.Logger;
+import freenet.support.io.NativeThread;
 
 /**
  * Bulk data transfer (not block). Bulk transfer is designed for files which may be much bigger than a 
@@ -49,6 +57,8 @@ public class BulkTransmitter {
 	private long finishTime=-1;
 	private String cancelReason;
 	private final ByteCounter ctr;
+	private final TransmitCompletionCallback callback;
+	private final DBJobRunner runner;
 	
 	/**
 	 * Create a bulk data transmitter.
@@ -60,11 +70,17 @@ public class BulkTransmitter {
 	 * @throws DisconnectedException If the peer we are trying to send to becomes disconnected.
 	 */
 	public BulkTransmitter(PartiallyReceivedBulk prb, PeerContext peer, long uid, boolean noWait, ByteCounter ctr) throws DisconnectedException {
+		this(null, null, prb, peer, uid, noWait, ctr);
+	}
+
+	public BulkTransmitter(final DBJobRunner runner, final TransmitCompletionCallback callback, PartiallyReceivedBulk prb, PeerContext peer, long uid, boolean noWait, ByteCounter ctr) throws DisconnectedException {
 		this.prb = prb;
 		this.peer = peer;
 		this.uid = uid;
 		this.noWait = noWait;
 		this.ctr = ctr;
+		this.callback = callback;
+		this.runner = runner;
 		if(ctr == null) throw new NullPointerException();
 		peerBootID = peer.getBootID();
 		// Need to sync on prb while doing both operations, to avoid race condition.
@@ -103,6 +119,18 @@ public class BulkTransmitter {
 					new AsyncMessageFilterCallback() {
 						public void onMatched(Message m) {
 							completed();
+							if(callback != null && runner != null)
+								try {
+									runner.queue(new DBJob() {
+										public boolean run(ObjectContainer container, ClientContext context) {
+											callback.onSuccess(container, context);
+											return false;
+										}
+									}, NativeThread.NORM_PRIORITY, false);
+								} catch (DatabaseDisabledException e) {
+									// TODO Auto-generated catch block
+									e.printStackTrace();
+								}
 						}
 						public boolean shouldTimeout() {
 							synchronized(BulkTransmitter.this) {
@@ -148,6 +176,18 @@ public class BulkTransmitter {
 		synchronized(this) {
 			notifyAll();
 		}
+		if(callback != null && runner != null)
+			try {
+				runner.queue(new DBJob() {
+					public boolean run(ObjectContainer container, ClientContext context) {
+						callback.onFailure(container, context);
+						return false;
+					}
+				}, NativeThread.NORM_PRIORITY, false);
+			} catch (DatabaseDisabledException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 	}
 	
 	private void sendAbortedMessage() {
@@ -187,6 +227,8 @@ public class BulkTransmitter {
 	
 	/**
 	 * Send the file.
+	 * @param context
+	 * @param container
 	 * @return True if the file was successfully sent. False otherwise.
 	 */
 	public boolean send() {
@@ -324,6 +366,18 @@ outer:	while(true) {
 					BulkTransmitter.this.notifyAll();
 					if(Logger.shouldLog(Logger.MINOR, this)) Logger.minor(this, "Packet failed for "+BulkTransmitter.this);
 				} else {
+					if(callback != null && runner != null)
+						try {
+							runner.queue(new DBJob() {
+								public boolean run(ObjectContainer container, ClientContext context) {
+									callback.onBlockFinished(container, context);
+									return false;
+								}
+							}, NativeThread.NORM_PRIORITY, false);
+						} catch (DatabaseDisabledException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
 					inFlightPackets--;
 					if(inFlightPackets <= 0)
 						BulkTransmitter.this.notifyAll();

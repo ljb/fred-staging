@@ -1850,7 +1850,7 @@ public class NodeStats implements Persistable {
 	private long nodeToNodeRcvdBytes;
 	private long nodeToNodeSentBytes;
 	
-	final ByteCounter nodeToNodeCounter = new ByteCounter() {
+	public final ByteCounter nodeToNodeCounter = new ByteCounter() {
 
 		public void receivedBytes(int x) {
 			synchronized(NodeStats.this) {

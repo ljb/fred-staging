@@ -133,6 +133,21 @@ public class BitArray implements WritableToDataOutputStream {
 	    return Fields.hashCode(_bits);
 	}
 
+	public void setNFirstOnes(long n) {
+		for(int i=0;i<_bits.length;i++) {
+			if(n <= 0)
+				return;
+			else if(n >= 8) {
+				_bits[i] = (byte)0xFF;
+				n -= 8;
+			}
+			else {
+				_bits[i] = (byte)(Math.pow(2, n) - 1);
+				return;
+			}
+		}
+	}
+
 	public void setAllOnes() {
 		for(int i=0;i<_bits.length;i++)
 			_bits[i] = (byte)0xFF;

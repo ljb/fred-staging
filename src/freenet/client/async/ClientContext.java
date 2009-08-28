@@ -3,6 +3,8 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.client.async;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.util.Random;
 
 import com.db4o.ObjectContainer;
@@ -12,10 +14,15 @@ import freenet.client.FECQueue;
 import freenet.client.FetchException;
 import freenet.client.InsertException;
 import freenet.crypt.RandomSource;
+import freenet.io.comm.ByteCounter;
+import freenet.io.comm.DisconnectedException;
+import freenet.io.comm.MessageCore;
 import freenet.node.NodeClientCore;
+import freenet.node.PeerManager;
 import freenet.node.RequestScheduler;
 import freenet.node.RequestStarterGroup;
 import freenet.node.Ticker;
+import freenet.node.fcp.UnknownNodeIdentityException;
 import freenet.support.Executor;
 import freenet.support.Logger;
 import freenet.support.api.BucketFactory;
@@ -52,6 +59,9 @@ public class ClientContext {
 	public transient final FilenameGenerator fg;
 	public transient FilenameGenerator persistentFG;
 	public transient final RealCompressor rc;
+	public transient final ByteCounter nodeToNodeCounter;
+	public transient final PeerManager peers;
+	public transient final MessageCore usm;
 
 	public ClientContext(NodeClientCore core, FECQueue fecQueue, Executor mainExecutor,
 			BackgroundBlockEncoder blockEncoder, ArchiveManager archiveManager,
@@ -77,6 +87,9 @@ public class ClientContext {
 		this.fg = fg;
 		this.persistentFG = persistentFG;
 		this.rc = rc;
+		this.nodeToNodeCounter = core.node.nodeStats.nodeToNodeCounter;
+		this.peers = core.node.peers;
+		this.usm = core.node.usm;
 	}
 	
 	public void init(RequestStarterGroup starters) {
@@ -215,6 +228,47 @@ public class ClientContext {
 		} else {
 			inserter.start(null, this);
 		}
+	}
+
+	public void start(final ClientSender sender) throws DatabaseDisabledException {
+		jobRunner.queue(new DBJob() {
+			public boolean run(ObjectContainer container, ClientContext context) {
+				container.activate(sender, 1);
+				try {
+					sender.start(container, context);
+				} catch (UnknownNodeIdentityException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				} catch (DisconnectedException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				container.deactivate(sender, 1);
+				return true;
+			}
+		}, NativeThread.NORM_PRIORITY, false);
+	}
+
+	public void start(final ClientReceiver receiver) throws DatabaseDisabledException {
+		jobRunner.queue(new DBJob() {
+			public boolean run(ObjectContainer container, ClientContext context) {
+				container.activate(receiver, 1);
+				try {
+					receiver.start(container, context);
+				} catch (FileNotFoundException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				} catch (UnknownNodeIdentityException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				container.deactivate(receiver, 1);
+				return true;
+			}
+		}, NativeThread.NORM_PRIORITY, false);
 	}
 
 	/**

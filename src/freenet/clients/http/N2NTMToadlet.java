@@ -8,16 +8,25 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.HashMap;
 
+import com.db4o.ObjectContainer;
+
 import freenet.client.HighLevelSimpleClient;
 import freenet.l10n.NodeL10n;
+import freenet.client.async.ClientContext;
+import freenet.client.async.DBJob;
+import freenet.client.async.DatabaseDisabledException;
 import freenet.node.DarknetPeerNode;
 import freenet.node.Node;
 import freenet.node.NodeClientCore;
 import freenet.node.PeerManager;
+import freenet.node.fcp.ClientSend;
+import freenet.node.fcp.FCPServer;
+import freenet.node.fcp.IdentifierCollisionException;
 import freenet.support.HTMLNode;
 import freenet.support.Logger;
 import freenet.support.MultiValueTable;
 import freenet.support.api.HTTPRequest;
+import freenet.support.io.NativeThread;
 
 public class N2NTMToadlet extends Toadlet {
 	private Node node;
@@ -143,7 +152,7 @@ public class N2NTMToadlet extends Toadlet {
 					"infobox infobox-normal");
 			DarknetPeerNode[] peerNodes = node.getDarknetConnections();
 			String fnam = request.getPartAsString("filename", 1024);
-			File filename = null;
+			final File filename;
 			if(fnam != null && fnam.length() > 0) {
 				filename = new File(fnam);
 				if(!(filename.exists() && filename.canRead())) {
@@ -153,6 +162,8 @@ public class N2NTMToadlet extends Toadlet {
 					return;
 				}
 			}
+			else
+				filename = null;
 			HTMLNode peerTable = peerTableInfobox.addChild("table", "class",
 			"n2ntm-send-statuses");
 			HTMLNode peerTableHeaderRow = peerTable.addChild("tr");
@@ -160,18 +171,41 @@ public class N2NTMToadlet extends Toadlet {
 			peerTableHeaderRow.addChild("th", l10n("sendStatus"));
 			for (int i = 0; i < peerNodes.length; i++) {
 				if (request.isPartSet("node_" + peerNodes[i].hashCode())) {
-					DarknetPeerNode pn = peerNodes[i];
+					final DarknetPeerNode pn = peerNodes[i];
 					
 					int status;
 					
 					if(filename != null) {
-						try {
-							status = pn.sendFileOffer(filename, message);
-						} catch (IOException e) {
-							peerTableInfobox.addChild("#", l10n("noSuchFileOrCannotRead"));
-							Toadlet.addHomepageLink(peerTableInfobox);
-							this.writeHTMLReply(ctx, 200, "OK", pageNode.generate());
-							return;
+						final String identifier = "FProxy:" + pn.getName() + ":" + filename.getName();
+						final long size = filename.length();
+						status = pn.getPeerNodeStatus();
+						if(size > 0)
+							try {
+								node.clientCore.queue(new DBJob() {
+									public boolean run(ObjectContainer container, ClientContext context) {
+										FCPServer fcp = node.clientCore.getFCPServer();
+										ClientSend clientSend = new ClientSend(fcp.getGlobalForeverClient(), identifier, null, pn, Integer.MAX_VALUE, filename, node.random.nextLong(), fcp, container);
+										if(clientSend != null)
+											try {
+												fcp.startBlocking(clientSend, container, context);
+											} catch (IdentifierCollisionException e) {
+												Logger.error(this, "Identifier collision");
+												return false;
+											} catch (DatabaseDisabledException e) {
+												// TODO Auto-generated catch block
+												e.printStackTrace();
+											}
+											return true;
+									}
+								}, NativeThread.NORM_PRIORITY, false);
+							} catch (DatabaseDisabledException e) {
+								e.printStackTrace();
+							}
+							else {
+								peerTableInfobox.addChild("#", l10n("noSuchFileOrCannotRead"));
+								Toadlet.addHomepageLink(peerTableInfobox);
+								this.writeHTMLReply(ctx, 200, "OK", pageNode.generate());
+								return;
 						}
 					} else {
 						status = pn.sendTextFeed(message);
